@@ -122,6 +122,48 @@
   font-size: 13px;
 }
 
+.peer-list li {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.peer-list .peer {
+  flex: 1;
+}
+
+.pair-btn {
+  border: 1px solid #2c4638;
+  border-radius: 8px;
+  background: transparent;
+  color: #bfe3cc;
+  padding: 0 10px;
+  cursor: pointer;
+}
+
+.pair-btn:hover {
+  background: #1d2f26;
+}
+
+.download {
+  color: #7fd6a4;
+  font-size: 13px;
+}
+
+.file-btn {
+  padding: 10px 14px;
+  border: 1px solid #c4cfc6;
+  border-radius: 8px;
+  background: #ffffff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.file-btn.disabled {
+  color: #8aa093;
+  cursor: default;
+}
+
 .foot {
   margin-top: auto;
   line-height: 1.5;

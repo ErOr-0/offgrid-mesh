@@ -30,6 +30,8 @@ func main() {
 	dataPath := flag.String("data", "", "file to persist carried bundles, e.g. alice-bundles.json")
 	deviceID := flag.String("id", "", "stable device ID (default: generated, persisted next to -data file)")
 	hubURL := flag.String("hub", "", "sync hub base URL, e.g. https://hub.example.com or http://192.168.1.10:8090 (syncs when reachable)")
+	allowList := flag.String("allow", "", "comma-separated device IDs allowed to send to this node (default: everyone)")
+	exposeList := flag.String("expose", "", "comma-separated name=host:port HTTP services to expose to peers, e.g. web=127.0.0.1:3000")
 	flag.Parse()
 
 	id := *deviceID
@@ -42,6 +44,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("load bundle store: %v", err)
 	}
+
+	if *allowList != "" {
+		n.SetAllowlist(strings.Split(*allowList, ","))
+		log.Printf("allowlist active: %v", n.Allowlist())
+	}
+	for _, item := range strings.Split(*exposeList, ",") {
+		if parts := strings.SplitN(strings.TrimSpace(item), "=", 2); len(parts) == 2 && parts[0] != "" {
+			n.Expose(parts[0], parts[1])
+			log.Printf("exposing service %q at %s to peers", parts[0], parts[1])
+		}
+	}
+	log.Printf("%s pairing fingerprint: %s", *name, n.Fingerprint())
 
 	ctx := context.Background()
 	n.Run(ctx)

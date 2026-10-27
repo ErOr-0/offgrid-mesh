@@ -8,7 +8,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -18,6 +20,8 @@ import (
 
 	"github.com/ErOr-0/offgrid-mesh/backend/internal/bundle"
 	"github.com/ErOr-0/offgrid-mesh/backend/internal/discovery"
+	"github.com/ErOr-0/offgrid-mesh/backend/internal/e2e"
+	"github.com/ErOr-0/offgrid-mesh/backend/internal/files"
 	"github.com/ErOr-0/offgrid-mesh/backend/internal/store"
 )
 
@@ -30,6 +34,7 @@ type Message struct {
 	CreatedAt time.Time `json:"created_at"`
 	Mine      bool      `json:"mine"`
 	Status    string    `json:"status"` // sent | queued | delivered | received
+	Encrypted bool      `json:"encrypted,omitempty"`
 }
 
 type Event struct {
@@ -48,10 +53,15 @@ type Node struct {
 
 	disc  *discovery.Service
 	store *store.Store
+	ident *e2e.Identity
+	files *files.Store
 
 	mu        sync.RWMutex
 	messages  []Message
 	delivered map[string]bool
+	keys      map[string]string // device ID -> X25519 public key hex
+	allow     map[string]bool   // if non-empty, only these senders are accepted
+	exposes   map[string]string // tunnel service name -> local address
 	clients   map[*websocket.Conn]struct{}
 }
 
@@ -75,12 +85,122 @@ func NewWithID(name, addr string, discPort int, dataPath, id string) (*Node, err
 	if id == "" {
 		id = newID()
 	}
-	n := &Node{ID: id, Name: name, Addr: addr, store: st, delivered: make(map[string]bool), clients: make(map[*websocket.Conn]struct{})}
-	n.disc = discovery.New(discovery.Beacon{ID: n.ID, Name: name, Addr: addr}, discPort, func(p discovery.Peer) {
+	ident, err := loadIdentity(dataPath)
+	if err != nil {
+		return nil, err
+	}
+	n := &Node{
+		ID: id, Name: name, Addr: addr, store: st, ident: ident, files: files.New(),
+		delivered: make(map[string]bool), keys: make(map[string]string),
+		allow: make(map[string]bool), exposes: make(map[string]string), clients: make(map[*websocket.Conn]struct{}),
+	}
+	n.disc = discovery.New(discovery.Beacon{ID: n.ID, Name: name, Addr: addr, Key: ident.PublicHex()}, discPort, func(p discovery.Peer) {
+		if p.Key != "" {
+			n.LearnKey(p.ID, p.Key)
+		}
 		n.broadcast(Event{Type: "peer_joined", Peer: &p})
 		n.broadcastPeers()
 	})
 	return n, nil
+}
+
+// loadIdentity loads the X25519 private key next to the data file, or
+// generates one. Without a data file the identity is per-run.
+func loadIdentity(dataPath string) (*e2e.Identity, error) {
+	if dataPath == "" {
+		return e2e.Generate()
+	}
+	keyPath := dataPath + ".key"
+	if raw, err := os.ReadFile(keyPath); err == nil {
+		keyBytes, err := hex.DecodeString(strings.TrimSpace(string(raw)))
+		if err != nil {
+			return nil, err
+		}
+		return e2e.IdentityFromBytes(keyBytes)
+	}
+	ident, err := e2e.Generate()
+	if err != nil {
+		return nil, err
+	}
+	_ = os.WriteFile(keyPath, []byte(hex.EncodeToString(ident.Bytes())), 0o600)
+	return ident, nil
+}
+
+// PublicKey returns this node's X25519 public key, hex encoded.
+func (n *Node) PublicKey() string { return n.ident.PublicHex() }
+
+// Fingerprint returns the short pairing code for this node.
+func (n *Node) Fingerprint() string { return n.ident.Fingerprint() }
+
+// LearnKey records a device's public key for end-to-end encryption.
+func (n *Node) LearnKey(id, pubHex string) {
+	if id == "" || pubHex == "" {
+		return
+	}
+	n.mu.Lock()
+	n.keys[id] = pubHex
+	n.mu.Unlock()
+}
+
+func (n *Node) keyFor(id string) (string, bool) {
+	n.mu.RLock()
+	k, ok := n.keys[id]
+	n.mu.RUnlock()
+	if ok {
+		return k, true
+	}
+	for _, p := range n.disc.Peers() {
+		if p.ID == id && p.Key != "" {
+			n.LearnKey(id, p.Key)
+			return p.Key, true
+		}
+	}
+	return "", false
+}
+
+// seal encrypts text for a device when its key is known.
+func (n *Node) seal(toID, text string) ([]byte, bool) {
+	pub, ok := n.keyFor(toID)
+	if !ok {
+		return []byte(text), false
+	}
+	sealed, err := e2e.Encrypt(pub, []byte(text))
+	if err != nil {
+		return []byte(text), false
+	}
+	return sealed, true
+}
+
+// SetAllowlist restricts accepted senders. An empty list allows everyone.
+func (n *Node) SetAllowlist(ids []string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.allow = make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			n.allow[id] = true
+		}
+	}
+}
+
+// Allow adds one device to the allowlist (pairing).
+func (n *Node) Allow(id string) { n.SetAllowlist(append(n.Allowlist(), id)) }
+
+// Allowlist returns the current allowlist.
+func (n *Node) Allowlist() []string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	out := make([]string, 0, len(n.allow))
+	for id := range n.allow {
+		out = append(out, id)
+	}
+	return out
+}
+
+func (n *Node) allowed(fromID string) bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return len(n.allow) == 0 || n.allow[fromID]
 }
 
 func newID() string {
@@ -166,15 +286,18 @@ func (n *Node) AddHub(ctx context.Context, hubURL string) error {
 	var me struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
+		Key  string `json:"key"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&me); err != nil {
 		return err
 	}
 	n.Hub = base
-	peer := discovery.Peer{Beacon: discovery.Beacon{ID: me.ID, Name: me.Name, Addr: base}}
+	n.LearnKey(me.ID, me.Key)
+	peer := discovery.Peer{Beacon: discovery.Beacon{ID: me.ID, Name: me.Name, Addr: base, Key: me.Key}}
 	n.disc.Upsert(peer.Beacon)
+	n.fetchDirectory(ctx, base)
 	// Announce ourselves so the hub knows this device exists.
-	announce, _ := json.Marshal(discovery.Beacon{ID: n.ID, Name: n.Name, Addr: n.Addr})
+	announce, _ := json.Marshal(discovery.Beacon{ID: n.ID, Name: n.Name, Addr: n.Addr, Key: n.PublicKey()})
 	if req2, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/announce", bytes.NewReader(announce)); err == nil {
 		req2.Header.Set("Content-Type", "application/json")
 		if resp2, err := http.DefaultClient.Do(req2); err == nil {
@@ -201,6 +324,7 @@ func (n *Node) AddManualPeer(ctx context.Context, addr string) error {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 		Addr string `json:"addr"`
+		Key  string `json:"key"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&me); err != nil {
 		return err
@@ -209,9 +333,10 @@ func (n *Node) AddManualPeer(ctx context.Context, addr string) error {
 	if advertised == "" {
 		advertised = addr
 	}
-	n.disc.Upsert(discovery.Beacon{ID: me.ID, Name: me.Name, Addr: advertised})
+	n.LearnKey(me.ID, me.Key)
+	n.disc.Upsert(discovery.Beacon{ID: me.ID, Name: me.Name, Addr: advertised, Key: me.Key})
 	// Announce ourselves back so the peer knows us without broadcast.
-	announce, _ := json.Marshal(discovery.Beacon{ID: n.ID, Name: n.Name, Addr: n.Addr})
+	announce, _ := json.Marshal(discovery.Beacon{ID: n.ID, Name: n.Name, Addr: n.Addr, Key: n.PublicKey()})
 	req2, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL(addr)+"/api/announce", bytes.NewReader(announce))
 	if err != nil {
 		return nil
@@ -230,15 +355,18 @@ func (n *Node) Send(ctx context.Context, toID, text string) (*Message, error) {
 	if !ok {
 		return nil, fmt.Errorf("peer %s not found", toID)
 	}
-	msg := Message{ID: newID(), FromID: n.ID, FromName: n.Name, ToID: toID, Text: text, CreatedAt: time.Now(), Mine: true, Status: "sent"}
+	sealed, encrypted := n.seal(toID, text)
+	msg := Message{ID: newID(), FromID: n.ID, FromName: n.Name, ToID: toID, Text: text, CreatedAt: time.Now(), Mine: true, Status: "sent", Encrypted: encrypted}
 	b := bundle.Bundle{
 		ID: msg.ID, Kind: bundle.KindMessage, From: n.ID, FromName: n.Name, To: toID, CreatedAt: msg.CreatedAt,
-		ExpiresAt: msg.CreatedAt.Add(48 * time.Hour), Copies: 1, Visited: []string{n.ID}, Payload: []byte(text),
+		ExpiresAt: msg.CreatedAt.Add(48 * time.Hour), Copies: 1, Visited: []string{n.ID}, Encrypted: encrypted, Payload: sealed,
 	}
+	wire := msg
+	wire.Text = "" // text travels only inside the (sealed) bundle payload
 	payload, _ := json.Marshal(struct {
 		Message Message       `json:"message"`
 		Bundle  bundle.Bundle `json:"bundle"`
-	}{msg, b})
+	}{wire, b})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL(peer.Addr)+"/api/receive", bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
@@ -321,14 +449,15 @@ func (n *Node) QueueBundle(toID, region, text string, copies int, ttl time.Durat
 		ttl = 48 * time.Hour
 	}
 	now := time.Now()
+	sealed, encrypted := n.seal(toID, text)
 	b := &bundle.Bundle{
 		ID: newID(), Kind: bundle.KindMessage, From: n.ID, FromName: n.Name, To: toID, Region: region,
-		CreatedAt: now, ExpiresAt: now.Add(ttl), Copies: copies, Visited: []string{n.ID}, Payload: []byte(text),
+		CreatedAt: now, ExpiresAt: now.Add(ttl), Copies: copies, Visited: []string{n.ID}, Encrypted: encrypted, Payload: sealed,
 	}
 	if !n.store.Put(b) {
 		return nil, fmt.Errorf("bundle rejected")
 	}
-	msg := Message{ID: b.ID, FromID: n.ID, FromName: n.Name, ToID: toID, Text: text, CreatedAt: now, Mine: true, Status: "queued"}
+	msg := Message{ID: b.ID, FromID: n.ID, FromName: n.Name, ToID: toID, Text: text, CreatedAt: now, Mine: true, Status: "queued", Encrypted: encrypted}
 	n.storeMessage(msg)
 	n.broadcastBundles()
 	return b, nil
@@ -339,6 +468,9 @@ func (n *Node) QueueBundle(toID, region, text string, copies int, ttl time.Durat
 func (n *Node) ingestBundle(in *bundle.Bundle) {
 	if in == nil || in.Expired(time.Now()) || in.Seen(n.ID) {
 		return
+	}
+	if in.From != "" && !n.allowed(in.From) {
+		return // sender is not paired with this device
 	}
 	if in.To == n.ID {
 		switch in.Kind {
@@ -363,9 +495,18 @@ func (n *Node) deliver(b *bundle.Bundle) {
 	n.delivered[b.ID] = true
 	n.mu.Unlock()
 
+	text := string(b.Payload)
+	if b.Encrypted {
+		plain, err := n.ident.Decrypt(b.Payload)
+		if err != nil {
+			text = "[encrypted message that cannot be decrypted on this device]"
+		} else {
+			text = string(plain)
+		}
+	}
 	msg := Message{
 		ID: b.ID, FromID: b.From, FromName: b.FromName, ToID: n.ID,
-		Text: string(b.Payload), CreatedAt: b.CreatedAt, Mine: false, Status: "received",
+		Text: text, CreatedAt: b.CreatedAt, Mine: false, Status: "received", Encrypted: b.Encrypted,
 	}
 	n.storeMessage(msg)
 
@@ -447,11 +588,141 @@ func (n *Node) ExchangeWith(ctx context.Context, peer discovery.Peer) error {
 	return nil
 }
 
+// fetchDirectory learns public keys of devices the hub knows. Keys only:
+// those devices are not made peers, so we never dial their private addresses.
+func (n *Node) fetchDirectory(ctx context.Context, base string) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/directory", nil)
+	if err != nil {
+		return
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	var entries []discovery.Beacon
+	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+		return
+	}
+	for _, e := range entries {
+		n.LearnKey(e.ID, e.Key)
+	}
+}
+
+// --- Files ---
+
+// SendFile transfers a file directly to a known peer.
+func (n *Node) SendFile(ctx context.Context, toID, name string, data []byte) (*files.File, error) {
+	peer, ok := n.peerByID(toID)
+	if !ok {
+		return nil, fmt.Errorf("peer %s not found", toID)
+	}
+	f := files.File{ID: newID(), FromID: n.ID, FromName: n.Name, Name: name, Size: len(data), CreatedAt: time.Now(), Mine: true, Data: data}
+	payload, _ := json.Marshal(f)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL(peer.Addr)+"/api/files/receive", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("peer returned %s", resp.Status)
+	}
+	n.files.Put(&f)
+	return &f, nil
+}
+
+func (n *Node) Files() []*files.File { return n.files.List() }
+
+// --- Tunnel (HTTP services through a peer) ---
+
+// Expose makes a local HTTP service reachable by peers under a name.
+func (n *Node) Expose(name, localAddr string) {
+	n.mu.Lock()
+	n.exposes[name] = localAddr
+	n.mu.Unlock()
+}
+
+func (n *Node) exposed(name string) (string, bool) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	addr, ok := n.exposes[name]
+	return addr, ok
+}
+
+type tunnelCall struct {
+	Service string `json:"service"`
+	Method  string `json:"method"`
+	Path    string `json:"path"`
+	Body    []byte `json:"body,omitempty"`
+}
+
+type tunnelResult struct {
+	Status      int    `json:"status"`
+	ContentType string `json:"content_type"`
+	Body        []byte `json:"body"`
+}
+
+// callExposed proxies one HTTP request to a locally exposed service.
+func (n *Node) callExposed(ctx context.Context, call tunnelCall) (*tunnelResult, error) {
+	addr, ok := n.exposed(call.Service)
+	if !ok {
+		return nil, fmt.Errorf("service %q is not exposed by %s", call.Service, n.Name)
+	}
+	if !strings.HasPrefix(call.Path, "/") {
+		call.Path = "/" + call.Path
+	}
+	req, err := http.NewRequestWithContext(ctx, call.Method, "http://"+addr+call.Path, bytes.NewReader(call.Body))
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20))
+	if err != nil {
+		return nil, err
+	}
+	return &tunnelResult{Status: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), Body: body}, nil
+}
+
 // Handler returns the node's HTTP API.
 func (n *Node) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/me", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]string{"id": n.ID, "name": n.Name, "addr": n.Addr, "hub": n.Hub})
+		writeJSON(w, map[string]string{
+			"id": n.ID, "name": n.Name, "addr": n.Addr, "hub": n.Hub,
+			"key": n.PublicKey(), "fingerprint": n.Fingerprint(),
+		})
+	})
+	mux.HandleFunc("GET /api/directory", func(w http.ResponseWriter, r *http.Request) {
+		// Key directory: devices this node knows, for sealing bundles to
+		// destinations that are not currently nearby. Includes this node.
+		out := []discovery.Beacon{{ID: n.ID, Name: n.Name, Addr: n.Addr, Key: n.PublicKey()}}
+		for _, p := range n.Peers() {
+			out = append(out, p.Beacon)
+		}
+		writeJSON(w, out)
+	})
+	mux.HandleFunc("GET /api/allowlist", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, n.Allowlist())
+	})
+	mux.HandleFunc("POST /api/allow", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			ID string `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.ID == "" {
+			http.Error(w, "id is required", http.StatusBadRequest)
+			return
+		}
+		n.Allow(in.ID)
+		writeJSON(w, n.Allowlist())
 	})
 	mux.HandleFunc("GET /api/peers", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, n.Peers())
@@ -514,6 +785,7 @@ func (n *Node) Handler() http.Handler {
 			http.Error(w, "invalid beacon", http.StatusBadRequest)
 			return
 		}
+		n.LearnKey(b.ID, b.Key)
 		n.disc.Upsert(b)
 		n.broadcastPeers()
 		writeJSON(w, map[string]string{"status": "ok"})
@@ -531,8 +803,123 @@ func (n *Node) Handler() http.Handler {
 			http.Error(w, "bundle expired", http.StatusGone)
 			return
 		}
-		n.receive(in.Message)
+		if !n.allowed(in.Bundle.From) {
+			http.Error(w, "sender is not paired with this device", http.StatusForbidden)
+			return
+		}
+		// Text is reconstructed from the bundle payload (decrypted if sealed).
+		msg := in.Message
+		msg.Text = ""
+		n.ingestBundle(&in.Bundle)
+		if in.Bundle.To == n.ID {
+			writeJSON(w, map[string]string{"status": "ok"})
+			return
+		}
+		n.receive(msg)
 		writeJSON(w, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("GET /api/files", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, n.Files())
+	})
+	mux.HandleFunc("POST /api/files/send", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			To   string `json:"to"`
+			Name string `json:"name"`
+			Data []byte `json:"data"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 12<<20)).Decode(&in); err != nil || in.To == "" || in.Name == "" {
+			http.Error(w, "to, name and data are required", http.StatusBadRequest)
+			return
+		}
+		f, err := n.SendFile(r.Context(), in.To, in.Name, in.Data)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		meta := *f
+		meta.Data = nil
+		writeJSON(w, meta)
+	})
+	mux.HandleFunc("POST /api/files/receive", func(w http.ResponseWriter, r *http.Request) {
+		var f files.File
+		if err := json.NewDecoder(io.LimitReader(r.Body, 12<<20)).Decode(&f); err != nil || f.ID == "" {
+			http.Error(w, "invalid file", http.StatusBadRequest)
+			return
+		}
+		if !n.allowed(f.FromID) {
+			http.Error(w, "sender is not paired with this device", http.StatusForbidden)
+			return
+		}
+		f.Mine = false
+		f.Size = len(f.Data)
+		n.files.Put(&f)
+		writeJSON(w, map[string]string{"status": "ok"})
+	})
+	mux.HandleFunc("GET /api/files/{id}/download", func(w http.ResponseWriter, r *http.Request) {
+		f, ok := n.files.Get(r.PathValue("id"))
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Disposition", "attachment; filename="+f.Name)
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write(f.Data)
+	})
+	mux.HandleFunc("POST /api/tunnel-call", func(w http.ResponseWriter, r *http.Request) {
+		var call tunnelCall
+		if err := json.NewDecoder(r.Body).Decode(&call); err != nil {
+			http.Error(w, "invalid tunnel call", http.StatusBadRequest)
+			return
+		}
+		res, err := n.callExposed(r.Context(), call)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		writeJSON(w, res)
+	})
+	// Gateway: /tunnel/{peerID}/{service}/... proxies an HTTP request to a
+	// service that peer exposed. This is how a host shares a local site/API.
+	mux.HandleFunc("/tunnel/{peerID}/{service}/", func(w http.ResponseWriter, r *http.Request) {
+		peer, ok := n.peerByID(r.PathValue("peerID"))
+		if !ok {
+			http.Error(w, "peer not found", http.StatusNotFound)
+			return
+		}
+		prefix := "/tunnel/" + r.PathValue("peerID") + "/" + r.PathValue("service")
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 10<<20))
+		call := tunnelCall{Service: r.PathValue("service"), Method: r.Method, Path: strings.TrimPrefix(r.URL.Path, prefix), Body: body}
+		if r.URL.RawQuery != "" {
+			call.Path += "?" + r.URL.RawQuery
+		}
+		payload, _ := json.Marshal(call)
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, baseURL(peer.Addr)+"/api/tunnel-call", bytes.NewReader(payload))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			msg, _ := io.ReadAll(resp.Body)
+			http.Error(w, string(msg), http.StatusBadGateway)
+			return
+		}
+		var res tunnelResult
+		if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		if res.ContentType != "" {
+			w.Header().Set("Content-Type", res.ContentType)
+		}
+		w.WriteHeader(res.Status)
+		_, _ = w.Write(res.Body)
 	})
 	mux.HandleFunc("GET /ws", func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true})

@@ -35,7 +35,9 @@ docs/       Architecture, roadmap, hackathon notes
 
 ## Status
 
-Phase 1 (LAN chat) and Phase 2 (carried bundles / mule mode) work. Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+Phases 1–3 work: LAN chat, carried bundles (mule mode), hub sync, end-to-end encryption, pairing/allowlist, file transfer, and the HTTP tunnel. Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+
+Phase 3 in short: every node has an X25519 identity (check the pairing fingerprint in the UI or startup log, compare it out-of-band, then press **Pair**). With `-allow <device-id>` a node rejects unpaired senders. Files send directly to a selected peer from the composer. A host exposes a local website with `-expose web=127.0.0.1:3000`, and peers open it at `http://<their-node>/tunnel/<host-device-id>/web/`.
 
 In mule mode, a message becomes a bundle with 8 Spray-and-Wait copies and a 48h TTL. Nodes exchange bundles automatically whenever they meet. A carrier that is not the destination keeps a split of the copies and carries the bundle onward. The destination delivers the message and issues a receipt bundle, which travels back the same way until the sender's message is marked delivered. Bundle queues persist with `-data <file>`, and device IDs stay stable with `-id` or next to the data file.
 
@@ -94,7 +96,7 @@ Behaviour:
 - No internet: LAN chat, discovery, and carried bundles keep working locally. Nothing is lost.
 - Internet appears on any device: it pushes bundles it carries and pulls bundles waiting for it (every 5s while reachable, with retries at startup).
 - The hub stores bundles until the destination syncs, then issues and forwards delivery receipts the same way.
-- Anyone can read bundle metadata on the hub today; payloads are not yet end-to-end encrypted. That is Phase 3, and it is required before trusting a public hub.
+- Bundle payloads are end-to-end encrypted to the destination's X25519 key whenever the sender knows that key (learned from nearby peers or the hub's key directory). Carriers and the hub see only ciphertext plus routing metadata. If a destination key is unknown, the bundle is queued unsealed and marked as such in the UI — pair with the device or sync with the hub first to seal it.
 
 ## Hackathon submission checklist
 

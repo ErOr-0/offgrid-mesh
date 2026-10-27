@@ -25,8 +25,9 @@ type Bundle struct {
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 	HopCount  int       `json:"hop_count"`
-	Copies    int       `json:"copies"`            // Spray-and-Wait copies this holder may still spray
-	Visited   []string  `json:"visited,omitempty"` // carrier hashes, for loop prevention
+	Copies    int       `json:"copies"`              // Spray-and-Wait copies this holder may still spray
+	Visited   []string  `json:"visited,omitempty"`   // carrier hashes, for loop prevention
+	Encrypted bool      `json:"encrypted,omitempty"` // Payload is sealed to To's public key
 	Payload   []byte    `json:"payload"`
 }
 

@@ -1,14 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
 import {
+  allowDevice,
   connectEvents,
   fetchBundles,
+  fetchFiles,
   fetchMe,
   fetchMessages,
   fetchPeers,
+  fileDownloadURL,
   queueBundle,
+  sendFile,
   sendMessage,
   type BundleInfo,
   type ChatMessage,
+  type FileInfo,
   type Me,
   type Peer,
 } from './api'
@@ -21,6 +26,7 @@ function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [draft, setDraft] = useState('')
   const [bundles, setBundles] = useState<BundleInfo[]>([])
+  const [files, setFiles] = useState<FileInfo[]>([])
   const [mode, setMode] = useState<'live' | 'carry'>('live')
   const [destID, setDestID] = useState('')
   const [region, setRegion] = useState('')
@@ -33,17 +39,19 @@ function App() {
     let cancelled = false
     ;(async () => {
       try {
-        const [meData, peerData, msgData, bundleData] = await Promise.all([
+        const [meData, peerData, msgData, bundleData, fileData] = await Promise.all([
           fetchMe(),
           fetchPeers(),
           fetchMessages(),
           fetchBundles(),
+          fetchFiles(),
         ])
         if (cancelled) return
         setMe(meData)
         setPeers(peerData ?? [])
         setMessages(msgData ?? [])
         setBundles(bundleData ?? [])
+        setFiles(fileData ?? [])
         setStatus('Connected')
         ws = connectEvents((ev) => {
           if (ev.type === 'message') {
@@ -80,6 +88,28 @@ function App() {
   const activePeer = peers.find((p) => p.id === selected)
   const canSend = mode === 'carry' ? Boolean(conversationID && draft.trim()) : Boolean(selected && draft.trim())
 
+  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file || !selected) return
+    setError('')
+    try {
+      await sendFile(selected, file)
+      setFiles((await fetchFiles()) ?? [])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'File send failed')
+    }
+  }
+
+  async function onAllow(id: string) {
+    setError('')
+    try {
+      await allowDevice(id)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Pairing failed')
+    }
+  }
+
   async function onSend(e: React.FormEvent) {
     e.preventDefault()
     if (!canSend) return
@@ -112,6 +142,7 @@ function App() {
           <span className="mono">{me ? me.addr : status}</span>
           <span className="mono dim">{me?.id}</span>
           <span className="mono dim">{me?.hub ? `Hub sync: ${me.hub}` : 'Hub sync: not configured'}</span>
+          <span className="mono dim">Pairing code: {me?.fingerprint ?? '...'}</span>
         </div>
 
         <h2 className="section-title">Nearby peers ({peers.length})</h2>
@@ -134,6 +165,9 @@ function App() {
                   <span className="mono">{p.addr}</span>
                 </span>
               </button>
+              <button type="button" className="pair-btn" onClick={() => onAllow(p.id)}>
+                Pair
+              </button>
             </li>
           ))}
         </ul>
@@ -147,14 +181,32 @@ function App() {
               <span className="mono">
                 hops {b.hop_count} · copies {b.copies} · {b.visited?.length ?? 0} carriers
                 {b.region ? ` · ${b.region}` : ''}
+                {b.encrypted ? ' · sealed' : ''}
               </span>
               <span className="mono dim">expires {new Date(b.expires_at).toLocaleString()}</span>
             </li>
           ))}
         </ul>
 
+        <h2 className="section-title">Files ({files.length})</h2>
+        {files.length === 0 && <p className="muted pad">No files yet. Select a peer, then attach a file below.</p>}
+        <ul className="bundle-list">
+          {files.map((f) => (
+            <li key={f.id} className="bundle-item">
+              <strong>{f.name}</strong>
+              <span className="mono">
+                {f.mine ? 'sent' : `from ${f.from_name}`} · {f.size} bytes
+              </span>
+              <a className="download" href={fileDownloadURL(f.id)}>
+                Download
+              </a>
+            </li>
+          ))}
+        </ul>
+
         <p className="foot muted">
           Live mode needs a reachable peer. Carry mode stores a bundle and hands copies to peers you meet.
+          A peer exposes a website with -expose web=127.0.0.1:3000; open it here via /tunnel/&lt;device-id&gt;/web/ on your node.
         </p>
       </aside>
 
@@ -177,6 +229,7 @@ function App() {
               <time>
                 {new Date(m.created_at).toLocaleTimeString()}
                 {m.mine && m.status ? ` · ${m.status}` : ''}
+                {m.encrypted ? ' · end-to-end encrypted' : ''}
               </time>
             </div>
           ))}
@@ -220,6 +273,10 @@ function App() {
           <button type="submit" disabled={!canSend}>
             {mode === 'carry' ? 'Queue bundle' : 'Send'}
           </button>
+          <label className={selected ? 'file-btn' : 'file-btn disabled'}>
+            Attach file
+            <input type="file" hidden disabled={!selected} onChange={onFile} />
+          </label>
         </form>
       </main>
     </div>

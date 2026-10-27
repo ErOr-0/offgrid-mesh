@@ -23,9 +23,11 @@
 
 ## Phase 3 — Files, identity, tunnel
 
-- [ ] Encrypted file transfer with progress
-- [ ] Device pairing (QR / code), allowlist
-- [ ] Tunnel: expose a local port through a host node
+- [x] End-to-end encryption: X25519 identity per node, bundle payloads sealed to the destination (carriers/hub see ciphertext only)
+- [x] File transfer between peers with download in the UI
+- [x] Device pairing: fingerprint code per node, Pair button / `-allow` allowlist enforced on receive, exchange, and files
+- [x] Tunnel: `-expose web=127.0.0.1:3000`, reachable by peers at `/tunnel/<device-id>/web/`
+- [ ] File progress bar, QR pairing, file payloads carried inside bundles
 
 ## Phase 4 — Hosting and polish
 

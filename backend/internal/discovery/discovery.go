@@ -15,7 +15,8 @@ import (
 type Beacon struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-	Addr string `json:"addr"` // host:port of the node's HTTP API
+	Addr string `json:"addr"`          // host:port of the node's HTTP API
+	Key  string `json:"key,omitempty"` // X25519 public key, hex, for end-to-end encryption
 }
 
 // Peer is a discovered node.

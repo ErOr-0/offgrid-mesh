@@ -2,7 +2,18 @@ export interface Peer {
   id: string
   name: string
   addr: string
+  key?: string
   last_seen: string
+}
+
+export interface FileInfo {
+  id: string
+  from_id: string
+  from_name: string
+  name: string
+  size: number
+  created_at: string
+  mine: boolean
 }
 
 export interface ChatMessage {
@@ -14,6 +25,7 @@ export interface ChatMessage {
   created_at: string
   mine: boolean
   status: string
+  encrypted?: boolean
 }
 
 export interface BundleInfo {
@@ -28,6 +40,7 @@ export interface BundleInfo {
   expires_at: string
   hop_count: number
   copies: number
+  encrypted?: boolean
   visited?: string[]
 }
 
@@ -36,6 +49,8 @@ export interface Me {
   name: string
   addr: string
   hub?: string
+  key?: string
+  fingerprint?: string
 }
 
 export type NodeEvent =
@@ -86,6 +101,37 @@ export async function sendMessage(to: string, text: string): Promise<void> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ to, text }),
+  })
+  if (!r.ok) throw new Error(await r.text())
+}
+
+export async function fetchFiles(): Promise<FileInfo[]> {
+  const r = await fetch(`${nodeBase}/api/files`)
+  if (!r.ok) throw new Error('node unreachable')
+  return r.json()
+}
+
+export function fileDownloadURL(id: string): string {
+  return `${nodeBase}/api/files/${id}/download`
+}
+
+export async function sendFile(to: string, file: File): Promise<void> {
+  const buf = new Uint8Array(await file.arrayBuffer())
+  let binary = ''
+  buf.forEach((b) => (binary += String.fromCharCode(b)))
+  const r = await fetch(`${nodeBase}/api/files/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ to, name: file.name, data: btoa(binary) }),
+  })
+  if (!r.ok) throw new Error(await r.text())
+}
+
+export async function allowDevice(id: string): Promise<void> {
+  const r = await fetch(`${nodeBase}/api/allow`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
   })
   if (!r.ok) throw new Error(await r.text())
 }
