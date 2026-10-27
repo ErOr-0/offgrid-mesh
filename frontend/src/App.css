@@ -103,9 +103,58 @@
   flex: none;
 }
 
+.bundle-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bundle-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid #2c4638;
+  border-radius: 8px;
+  padding: 9px 11px;
+  font-size: 13px;
+}
+
 .foot {
   margin-top: auto;
   line-height: 1.5;
+}
+
+.mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: end;
+  padding: 10px 20px 0;
+  background: #ffffff;
+}
+
+.mode-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #476054;
+}
+
+.mode-row input,
+.mode-row select {
+  padding: 9px 10px;
+  border: 1px solid #c4cfc6;
+  border-radius: 8px;
+}
+
+.mode-row input {
+  flex: 1;
+  min-width: 180px;
 }
 
 .chat {

@@ -22,6 +22,7 @@ type Beacon struct {
 type Peer struct {
 	Beacon
 	LastSeen time.Time `json:"last_seen"`
+	Manual   bool      `json:"manual,omitempty"` // added by address: never expires
 }
 
 // Service broadcasts this node's beacon and tracks beacons from others.
@@ -49,12 +50,13 @@ func (s *Service) Peers() []Peer {
 	return out
 }
 
-// Upsert registers or refreshes a peer found by other means, e.g. a manual address.
+// Upsert registers or refreshes a peer found by other means, e.g. a manual
+// address. Manual peers are not beacon-refreshed, so they never expire.
 func (s *Service) Upsert(b Beacon) {
 	if b.ID == "" || b.ID == s.self.ID {
 		return
 	}
-	p := Peer{Beacon: b, LastSeen: time.Now()}
+	p := Peer{Beacon: b, LastSeen: time.Now(), Manual: true}
 	s.mu.Lock()
 	_, known := s.peers[b.ID]
 	s.peers[b.ID] = p
@@ -123,7 +125,8 @@ func (s *Service) listen(ctx context.Context) {
 		}
 		p := Peer{Beacon: Beacon{ID: b.ID, Name: b.Name, Addr: peerAddr}, LastSeen: time.Now()}
 		s.mu.Lock()
-		_, known := s.peers[b.ID]
+		old, known := s.peers[b.ID]
+		p.Manual = known && old.Manual
 		s.peers[b.ID] = p
 		s.mu.Unlock()
 		if !known && s.onPeer != nil {
@@ -142,7 +145,7 @@ func (s *Service) expire(ctx context.Context) {
 		case now := <-t.C:
 			s.mu.Lock()
 			for id, p := range s.peers {
-				if now.Sub(p.LastSeen) > 10*time.Second {
+				if !p.Manual && now.Sub(p.LastSeen) > 10*time.Second {
 					delete(s.peers, id)
 				}
 			}

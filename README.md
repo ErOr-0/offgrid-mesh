@@ -35,7 +35,9 @@ docs/       Architecture, roadmap, hackathon notes
 
 ## Status
 
-Phase 1 (LAN chat) works. Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+Phase 1 (LAN chat) and Phase 2 (carried bundles / mule mode) work. Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+
+In mule mode, a message becomes a bundle with 8 Spray-and-Wait copies and a 48h TTL. Nodes exchange bundles automatically whenever they meet. A carrier that is not the destination keeps a split of the copies and carries the bundle onward. The destination delivers the message and issues a receipt bundle, which travels back the same way until the sender's message is marked delivered. Bundle queues persist with `-data <file>`, and device IDs stay stable with `-id` or next to the data file.
 
 ## Run it (Phase 1 demo)
 
@@ -58,6 +60,18 @@ npm run dev
 ```
 
 Open http://localhost:5173 in your browser (proxies to the node on :8080). For the second node's UI, open http://localhost:5173/?node=http://localhost:8081
+
+For mule mode, use **Carry (bundle)** in the UI, or queue from the API:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/bundles -ContentType 'application/json' -Body '{"to":"<device-id>","region":"MY-Johor","text":"hello Malaysia","copies":8,"ttl_hours":48}'
+```
+
+Persist a node's queue and identity across restarts:
+
+```powershell
+go run ./cmd/node -name Alice -port 8080 -data alice-bundles.json
+```
 
 ## Hackathon submission checklist
 

@@ -9,9 +9,11 @@
 
 ## Phase 2 — Bundles and mule mode
 
-- [ ] `Bundle` type, storage, TTL expiry
-- [ ] Peer exchange over LAN, then BLE / Wi-Fi Direct
-- [ ] Spray-and-Wait forwarding, delivery receipts
+- [x] `Bundle` type, persistent storage (`-data` file), TTL expiry
+- [x] Peer bundle exchange over LAN/HTTP, automatic every 5s when peers meet
+- [x] Spray-and-Wait forwarding (binary copy split), delivery receipts return to sender
+- [x] Stable device IDs (`-id`, or persisted next to the `-data` file)
+- [ ] BLE / Wi-Fi Direct transport (same exchange protocol, new transport)
 
 ## Phase 3 — Files, identity, tunnel
 

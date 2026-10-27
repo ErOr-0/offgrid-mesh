@@ -8,11 +8,14 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -24,10 +27,20 @@ func main() {
 	port := flag.Int("port", 8080, "HTTP API port")
 	discPort := flag.Int("discovery-port", 42069, "UDP discovery port")
 	peerList := flag.String("peer", "", "comma-separated peer addresses (host:port) if broadcast is blocked")
+	dataPath := flag.String("data", "", "file to persist carried bundles, e.g. alice-bundles.json")
+	deviceID := flag.String("id", "", "stable device ID (default: generated, persisted next to -data file)")
 	flag.Parse()
 
+	id := *deviceID
+	if id == "" && *dataPath != "" {
+		id = loadOrCreateID(*dataPath + ".id")
+	}
+
 	addr := fmt.Sprintf("%s:%d", localIP(), *port)
-	n := node.New(*name, addr, *discPort)
+	n, err := node.NewWithID(*name, addr, *discPort, *dataPath, id)
+	if err != nil {
+		log.Fatalf("load bundle store: %v", err)
+	}
 
 	ctx := context.Background()
 	n.Run(ctx)
@@ -52,6 +65,18 @@ func main() {
 
 	log.Printf("%s (%s) listening on port %d, advertising %s", *name, n.ID, *port, addr)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *port), n.Handler()))
+}
+
+// loadOrCreateID keeps a node's device ID stable across restarts.
+func loadOrCreateID(path string) string {
+	if data, err := os.ReadFile(path); err == nil && len(strings.TrimSpace(string(data))) > 0 {
+		return strings.TrimSpace(string(data))
+	}
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	id := hex.EncodeToString(b)
+	_ = os.WriteFile(path, []byte(id), 0o600)
+	return id
 }
 
 func localIP() string {
