@@ -34,9 +34,9 @@ type Message struct {
 type Event struct {
 	Type    string           `json:"type"` // message | peers | peer_joined | bundles | delivery
 	Message *Message         `json:"message,omitempty"`
-	Peers   []discovery.Peer `json:"peers,omitempty"`
+	Peers   []discovery.Peer `json:"peers"` // no omitempty: empty must stay [], not be dropped
 	Peer    *discovery.Peer  `json:"peer,omitempty"`
-	Bundles []*bundle.Bundle `json:"bundles,omitempty"`
+	Bundles []*bundle.Bundle `json:"bundles"` // no omitempty: empty must stay [], not be dropped
 }
 
 type Node struct {
@@ -230,6 +230,12 @@ func (n *Node) broadcastPeers() {
 }
 
 func (n *Node) broadcast(ev Event) {
+	if ev.Peers == nil {
+		ev.Peers = []discovery.Peer{}
+	}
+	if ev.Bundles == nil {
+		ev.Bundles = []*bundle.Bundle{}
+	}
 	n.mu.RLock()
 	clients := make([]*websocket.Conn, 0, len(n.clients))
 	for c := range n.clients {

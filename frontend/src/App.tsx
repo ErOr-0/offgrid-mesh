@@ -41,19 +41,19 @@ function App() {
         ])
         if (cancelled) return
         setMe(meData)
-        setPeers(peerData)
-        setMessages(msgData)
-        setBundles(bundleData)
+        setPeers(peerData ?? [])
+        setMessages(msgData ?? [])
+        setBundles(bundleData ?? [])
         setStatus('Connected')
         ws = connectEvents((ev) => {
           if (ev.type === 'message') {
             setMessages((prev) => (prev.some((m) => m.id === ev.message.id) ? prev : [...prev, ev.message]))
           } else if (ev.type === 'peers') {
-            setPeers(ev.peers)
+            setPeers(ev.peers ?? [])
           } else if (ev.type === 'peer_joined') {
             setPeers((prev) => (prev.some((p) => p.id === ev.peer.id) ? prev : [...prev, ev.peer]))
           } else if (ev.type === 'bundles') {
-            setBundles(ev.bundles)
+            setBundles(ev.bundles ?? [])
           } else if (ev.type === 'delivery') {
             setMessages((prev) => prev.map((m) => (m.id === ev.message.id ? ev.message : m)))
           }
@@ -87,8 +87,8 @@ function App() {
     try {
       if (mode === 'carry') {
         await queueBundle(conversationID, region.trim(), draft.trim())
-        setBundles(await fetchBundles())
-        setMessages(await fetchMessages())
+        setBundles((await fetchBundles()) ?? [])
+        setMessages((await fetchMessages()) ?? [])
       } else {
         await sendMessage(selected, draft.trim())
       }

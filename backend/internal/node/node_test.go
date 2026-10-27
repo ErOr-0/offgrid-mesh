@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -9,6 +10,24 @@ import (
 
 	"github.com/ErOr-0/offgrid-mesh/backend/internal/discovery"
 )
+
+func TestEmptyEventListsEncodeAsArrays(t *testing.T) {
+	n := New("Empty", "127.0.0.1:9", 0)
+	data, err := json.Marshal(Event{Type: "bundles", Bundles: n.Bundles()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"bundles":[]`) {
+		t.Fatalf("empty bundles must encode as [], got %s", data)
+	}
+	data, err = json.Marshal(Event{Type: "peers", Peers: n.Peers()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"peers":[]`) {
+		t.Fatalf("empty peers must encode as [], got %s", data)
+	}
+}
 
 func TestBundleDeliveredViaCarrierAndReceiptReturns(t *testing.T) {
 	// Carrier and destination are real HTTP nodes; the sender talks only to the carrier.
