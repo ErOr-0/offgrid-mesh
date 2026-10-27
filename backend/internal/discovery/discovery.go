@@ -13,10 +13,11 @@ import (
 
 // Beacon is broadcast periodically so nearby nodes can find each other.
 type Beacon struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Addr string `json:"addr"`          // host:port of the node's HTTP API
-	Key  string `json:"key,omitempty"` // X25519 public key, hex, for end-to-end encryption
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Addr   string `json:"addr"`             // host:port of the node's HTTP API
+	Key    string `json:"key,omitempty"`    // X25519 public key, hex, for end-to-end encryption
+	Region string `json:"region,omitempty"` // home region hint, e.g. MY-Johor
 }
 
 // Peer is a discovered node.
@@ -29,11 +30,19 @@ type Peer struct {
 // Service broadcasts this node's beacon and tracks beacons from others.
 type Service struct {
 	self   Beacon
+	selfMu sync.RWMutex
 	port   int
 	onPeer func(Peer)
 
 	mu    sync.RWMutex
 	peers map[string]Peer
+}
+
+// SetRegion updates the region advertised in this node's beacon.
+func (s *Service) SetRegion(region string) {
+	s.selfMu.Lock()
+	s.self.Region = region
+	s.selfMu.Unlock()
 }
 
 func New(self Beacon, port int, onPeer func(Peer)) *Service {
@@ -53,13 +62,19 @@ func (s *Service) Peers() []Peer {
 
 // Upsert registers or refreshes a peer found by other means, e.g. a manual
 // address. Manual peers are not beacon-refreshed, so they never expire.
-func (s *Service) Upsert(b Beacon) {
+func (s *Service) Upsert(b Beacon) { s.addBeacon(b, true) }
+
+// addBeacon registers a peer from any discovery source.
+func (s *Service) addBeacon(b Beacon, manual bool) {
 	if b.ID == "" || b.ID == s.self.ID {
 		return
 	}
-	p := Peer{Beacon: b, LastSeen: time.Now(), Manual: true}
+	p := Peer{Beacon: b, LastSeen: time.Now(), Manual: manual}
 	s.mu.Lock()
-	_, known := s.peers[b.ID]
+	old, known := s.peers[b.ID]
+	if known && old.Manual {
+		p.Manual = true
+	}
 	s.peers[b.ID] = p
 	s.mu.Unlock()
 	if !known && s.onPeer != nil {
@@ -72,6 +87,7 @@ func (s *Service) Run(ctx context.Context) {
 	go s.listen(ctx)
 	go s.broadcast(ctx)
 	go s.expire(ctx)
+	go s.runMDNS(ctx)
 }
 
 func (s *Service) broadcast(ctx context.Context) {
@@ -81,10 +97,12 @@ func (s *Service) broadcast(ctx context.Context) {
 		return
 	}
 	defer conn.Close()
-	data, _ := json.Marshal(s.self)
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
 	for {
+		s.selfMu.RLock()
+		data, _ := json.Marshal(s.self)
+		s.selfMu.RUnlock()
 		if _, err := conn.Write(data); err != nil {
 			log.Printf("discovery: broadcast write: %v", err)
 		}
@@ -124,15 +142,8 @@ func (s *Service) listen(ctx context.Context) {
 				peerAddr = net.JoinHostPort(udp.IP.String(), portOf(b.Addr))
 			}
 		}
-		p := Peer{Beacon: Beacon{ID: b.ID, Name: b.Name, Addr: peerAddr}, LastSeen: time.Now()}
-		s.mu.Lock()
-		old, known := s.peers[b.ID]
-		p.Manual = known && old.Manual
-		s.peers[b.ID] = p
-		s.mu.Unlock()
-		if !known && s.onPeer != nil {
-			s.onPeer(p)
-		}
+		b.Addr = peerAddr
+		s.addBeacon(b, false)
 	}
 }
 

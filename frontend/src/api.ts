@@ -136,6 +136,64 @@ export async function allowDevice(id: string): Promise<void> {
   if (!r.ok) throw new Error(await r.text())
 }
 
+export interface RoutingEntry {
+  device_id: string
+  score: number
+  encounters: number
+  last_seen: string
+}
+
+export async function fetchRouting(): Promise<RoutingEntry[]> {
+  const r = await fetch(`${nodeBase}/api/routing`)
+  if (!r.ok) throw new Error('node unreachable')
+  return r.json()
+}
+
+export function pairQRURL(): string {
+  return `${nodeBase}/api/pair-qr`
+}
+
+export async function fetchPairCode(): Promise<string> {
+  const r = await fetch(`${nodeBase}/api/pair-code`)
+  if (!r.ok) throw new Error('node unreachable')
+  const data = (await r.json()) as { code: string }
+  return data.code
+}
+
+export async function pairWithCode(code: string): Promise<void> {
+  const r = await fetch(`${nodeBase}/api/pair`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  })
+  if (!r.ok) throw new Error(await r.text())
+}
+
+export function sendFileWithProgress(
+  to: string,
+  file: File,
+  onProgress: (pct: number) => void,
+): Promise<void> {
+  return file.arrayBuffer().then(
+    (buf) =>
+      new Promise<void>((resolve, reject) => {
+        const bytes = new Uint8Array(buf)
+        let binary = ''
+        bytes.forEach((b) => (binary += String.fromCharCode(b)))
+        const xhr = new XMLHttpRequest()
+        xhr.open('POST', `${nodeBase}/api/files/send`)
+        xhr.setRequestHeader('Content-Type', 'application/json')
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100))
+        }
+        xhr.onload = () =>
+          xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(xhr.responseText || 'send failed'))
+        xhr.onerror = () => reject(new Error('send failed'))
+        xhr.send(JSON.stringify({ to, name: file.name, data: btoa(binary) }))
+      }),
+  )
+}
+
 export function connectEvents(onEvent: (ev: NodeEvent) => void): WebSocket {
   const wsBase = nodeBase
     ? nodeBase.replace(/^http/, 'ws')

@@ -164,6 +164,52 @@
   cursor: default;
 }
 
+.pair-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.qr {
+  background: #ffffff;
+  border-radius: 8px;
+  padding: 6px;
+}
+
+.pair-form {
+  display: flex;
+  gap: 6px;
+}
+
+.pair-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid #2c4638;
+  border-radius: 8px;
+  background: #1d2f26;
+  color: inherit;
+}
+
+.pair-form button {
+  border: 0;
+  border-radius: 8px;
+  background: #1f6b3f;
+  color: #fff;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.pair-code {
+  word-break: break-all;
+  line-height: 1.5;
+}
+
+.file-progress {
+  margin: 0 20px 12px;
+  width: calc(100% - 40px);
+}
+
 .foot {
   margin-top: auto;
   line-height: 1.5;

@@ -6,16 +6,21 @@ import {
   fetchFiles,
   fetchMe,
   fetchMessages,
+  fetchPairCode,
   fetchPeers,
+  fetchRouting,
   fileDownloadURL,
+  pairQRURL,
+  pairWithCode,
   queueBundle,
-  sendFile,
+  sendFileWithProgress,
   sendMessage,
   type BundleInfo,
   type ChatMessage,
   type FileInfo,
   type Me,
   type Peer,
+  type RoutingEntry,
 } from './api'
 import './App.css'
 
@@ -27,6 +32,10 @@ function App() {
   const [draft, setDraft] = useState('')
   const [bundles, setBundles] = useState<BundleInfo[]>([])
   const [files, setFiles] = useState<FileInfo[]>([])
+  const [routing, setRouting] = useState<RoutingEntry[]>([])
+  const [pairCode, setPairCode] = useState('')
+  const [pairInput, setPairInput] = useState('')
+  const [fileProgress, setFileProgress] = useState<number | null>(null)
   const [mode, setMode] = useState<'live' | 'carry'>('live')
   const [destID, setDestID] = useState('')
   const [region, setRegion] = useState('')
@@ -39,12 +48,14 @@ function App() {
     let cancelled = false
     ;(async () => {
       try {
-        const [meData, peerData, msgData, bundleData, fileData] = await Promise.all([
+        const [meData, peerData, msgData, bundleData, fileData, routingData, myPairCode] = await Promise.all([
           fetchMe(),
           fetchPeers(),
           fetchMessages(),
           fetchBundles(),
           fetchFiles(),
+          fetchRouting(),
+          fetchPairCode(),
         ])
         if (cancelled) return
         setMe(meData)
@@ -52,6 +63,8 @@ function App() {
         setMessages(msgData ?? [])
         setBundles(bundleData ?? [])
         setFiles(fileData ?? [])
+        setRouting(routingData ?? [])
+        setPairCode(myPairCode)
         setStatus('Connected')
         ws = connectEvents((ev) => {
           if (ev.type === 'message') {
@@ -62,6 +75,8 @@ function App() {
             setPeers((prev) => (prev.some((p) => p.id === ev.peer.id) ? prev : [...prev, ev.peer]))
           } else if (ev.type === 'bundles') {
             setBundles(ev.bundles ?? [])
+            fetchRouting().then((r) => setRouting(r ?? [])).catch(() => {})
+            fetchFiles().then((f) => setFiles(f ?? [])).catch(() => {})
           } else if (ev.type === 'delivery') {
             setMessages((prev) => prev.map((m) => (m.id === ev.message.id ? ev.message : m)))
           }
@@ -93,11 +108,27 @@ function App() {
     e.target.value = ''
     if (!file || !selected) return
     setError('')
+    setFileProgress(0)
     try {
-      await sendFile(selected, file)
+      await sendFileWithProgress(selected, file, setFileProgress)
       setFiles((await fetchFiles()) ?? [])
     } catch (err) {
       setError(err instanceof Error ? err.message : 'File send failed')
+    } finally {
+      setFileProgress(null)
+    }
+  }
+
+  async function onPairSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!pairInput.trim()) return
+    setError('')
+    try {
+      await pairWithCode(pairInput.trim())
+      setPairInput('')
+      setRouting((await fetchRouting()) ?? [])
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Pairing failed')
     }
   }
 
@@ -204,9 +235,45 @@ function App() {
           ))}
         </ul>
 
+        <h2 className="section-title">Best carriers</h2>
+        {routing.length === 0 && <p className="muted pad">No encounters yet. Scores grow as devices meet.</p>}
+        <ul className="bundle-list">
+          {routing.map((r) => (
+            <li key={r.device_id} className="bundle-item">
+              <span className="mono">{r.device_id.slice(0, 8)}…</span>
+              <span className="mono">
+                score {r.score.toFixed(2)} · met {r.encounters}x
+              </span>
+            </li>
+          ))}
+        </ul>
+
+        <h2 className="section-title">Pair a device</h2>
+        <div className="pair-box">
+          {me && <img className="qr" src={pairQRURL()} alt="Pairing QR code for this device" width={132} height={132} />}
+          <p className="muted">Scan this QR, or paste another device's pairing code:</p>
+          <form onSubmit={onPairSubmit} className="pair-form">
+            <input
+              value={pairInput}
+              onChange={(e) => setPairInput(e.target.value)}
+              placeholder='{"id":"...","key":"..."}'
+              aria-label="Pairing code"
+            />
+            <button type="submit" disabled={!pairInput.trim()}>
+              Pair
+            </button>
+          </form>
+          {pairCode && (
+            <details>
+              <summary className="muted">My pairing code</summary>
+              <p className="mono pair-code">{pairCode}</p>
+            </details>
+          )}
+        </div>
+
         <p className="foot muted">
           Live mode needs a reachable peer. Carry mode stores a bundle and hands copies to peers you meet.
-          A peer exposes a website with -expose web=127.0.0.1:3000; open it here via /tunnel/&lt;device-id&gt;/web/ on your node.
+          A peer hosts a website with -host site=./hosted; open it here via /tunnel/&lt;device-id&gt;/site/ on your node.
         </p>
       </aside>
 
@@ -274,10 +341,15 @@ function App() {
             {mode === 'carry' ? 'Queue bundle' : 'Send'}
           </button>
           <label className={selected ? 'file-btn' : 'file-btn disabled'}>
-            Attach file
+            {fileProgress !== null ? `Sending ${fileProgress}%` : 'Attach file'}
             <input type="file" hidden disabled={!selected} onChange={onFile} />
           </label>
         </form>
+        {fileProgress !== null && (
+          <progress className="file-progress" value={fileProgress} max={100}>
+            {fileProgress}%
+          </progress>
+        )}
       </main>
     </div>
   )

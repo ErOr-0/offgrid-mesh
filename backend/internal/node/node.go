@@ -5,18 +5,22 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+	qrcode "github.com/skip2/go-qrcode"
 
 	"github.com/ErOr-0/offgrid-mesh/backend/internal/bundle"
 	"github.com/ErOr-0/offgrid-mesh/backend/internal/discovery"
@@ -51,10 +55,13 @@ type Node struct {
 	Addr string // advertised host:port
 	Hub  string // base URL of the sync hub, if configured
 
-	disc  *discovery.Service
-	store *store.Store
-	ident *e2e.Identity
-	files *files.Store
+	Region string // home region hint, e.g. MY-Johor
+
+	disc    *discovery.Service
+	store   *store.Store
+	ident   *e2e.Identity
+	files   *files.Store
+	routing *routingTable
 
 	mu        sync.RWMutex
 	messages  []Message
@@ -62,6 +69,7 @@ type Node struct {
 	keys      map[string]string // device ID -> X25519 public key hex
 	allow     map[string]bool   // if non-empty, only these senders are accepted
 	exposes   map[string]string // tunnel service name -> local address
+	hostDirs  map[string]string // tunnel service name -> static directory
 	clients   map[*websocket.Conn]struct{}
 }
 
@@ -90,14 +98,15 @@ func NewWithID(name, addr string, discPort int, dataPath, id string) (*Node, err
 		return nil, err
 	}
 	n := &Node{
-		ID: id, Name: name, Addr: addr, store: st, ident: ident, files: files.New(),
+		ID: id, Name: name, Addr: addr, store: st, ident: ident, files: files.New(), routing: newRoutingTable(),
 		delivered: make(map[string]bool), keys: make(map[string]string),
-		allow: make(map[string]bool), exposes: make(map[string]string), clients: make(map[*websocket.Conn]struct{}),
+		allow: make(map[string]bool), exposes: make(map[string]string), hostDirs: make(map[string]string), clients: make(map[*websocket.Conn]struct{}),
 	}
 	n.disc = discovery.New(discovery.Beacon{ID: n.ID, Name: name, Addr: addr, Key: ident.PublicHex()}, discPort, func(p discovery.Peer) {
 		if p.Key != "" {
 			n.LearnKey(p.ID, p.Key)
 		}
+		n.routing.Encounter(p.ID)
 		n.broadcast(Event{Type: "peer_joined", Peer: &p})
 		n.broadcastPeers()
 	})
@@ -124,6 +133,51 @@ func loadIdentity(dataPath string) (*e2e.Identity, error) {
 	}
 	_ = os.WriteFile(keyPath, []byte(hex.EncodeToString(ident.Bytes())), 0o600)
 	return ident, nil
+}
+
+// SetRegion sets this node's home region, advertised to peers for routing.
+func (n *Node) SetRegion(region string) {
+	n.Region = region
+	n.disc.SetRegion(region)
+}
+
+// RoutingEntries returns encounter scores for known carriers.
+func (n *Node) RoutingEntries() []Entry { return n.routing.Entries() }
+
+// PairCode returns a JSON pairing code with this node's identity.
+// Share it out-of-band (QR, text) so another device can pair and seal to you.
+func (n *Node) PairCode() (string, error) {
+	data, err := json.Marshal(map[string]string{
+		"id": n.ID, "name": n.Name, "key": n.PublicKey(), "fingerprint": n.Fingerprint(),
+	})
+	return string(data), err
+}
+
+// Pair consumes another device's pairing code: learns its key and allowlists it.
+func (n *Node) Pair(code string) error {
+	var in struct {
+		ID          string `json:"id"`
+		Key         string `json:"key"`
+		Fingerprint string `json:"fingerprint"`
+	}
+	if err := json.Unmarshal([]byte(code), &in); err != nil || in.ID == "" || in.Key == "" {
+		return fmt.Errorf("invalid pairing code")
+	}
+	// Verify the fingerprint matches the key so a swapped code is visible.
+	if in.Fingerprint != "" {
+		sum := sha256.Sum256(mustHex(in.Key))
+		if hex.EncodeToString(sum[:])[:8] != in.Fingerprint {
+			return fmt.Errorf("pairing code fingerprint does not match its key")
+		}
+	}
+	n.LearnKey(in.ID, in.Key)
+	n.Allow(in.ID)
+	return nil
+}
+
+func mustHex(s string) []byte {
+	b, _ := hex.DecodeString(s)
+	return b
 }
 
 // PublicKey returns this node's X25519 public key, hex encoded.
@@ -541,8 +595,18 @@ func (n *Node) handleReceipt(b *bundle.Bundle) {
 // counts. Bundles handed directly to their destination are removed locally;
 // a delivery receipt will confirm arrival.
 func (n *Node) prepareOffers(peerID string) []*bundle.Bundle {
+	peerRegion := ""
+	if p, ok := n.peerByID(peerID); ok {
+		peerRegion = p.Region
+	}
 	var out []*bundle.Bundle
 	for _, b := range n.store.OffersFor(peerID, time.Now()) {
+		// Encounter gate: a bundle already carried by others (hop > 0) is
+		// only sprayed to carriers with a real encounter score, or whose
+		// region matches the destination. Origin bundles spray on meeting.
+		if b.To != peerID && b.HopCount > 0 && n.routing.Score(peerID, b.To, peerRegion, b.Region) < 0.1 {
+			continue
+		}
 		given, keep, ok := b.SprayFor(peerID)
 		if !ok {
 			continue
@@ -564,6 +628,7 @@ type exchangeRequest struct {
 
 // ExchangeWith swaps offerable bundles with one peer.
 func (n *Node) ExchangeWith(ctx context.Context, peer discovery.Peer) error {
+	n.routing.Encounter(peer.ID)
 	reqBody, _ := json.Marshal(exchangeRequest{FromID: n.ID, FromName: n.Name, Bundles: n.prepareOffers(peer.ID)})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL(peer.Addr)+"/api/exchange", bytes.NewReader(reqBody))
 	if err != nil {
@@ -667,8 +732,55 @@ type tunnelResult struct {
 	Body        []byte `json:"body"`
 }
 
+// HostDir serves a static directory as a tunnel service.
+func (n *Node) HostDir(name, dir string) {
+	n.mu.Lock()
+	n.hostDirs[name] = dir
+	n.mu.Unlock()
+}
+
+func (n *Node) hostDir(name string) (string, bool) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	dir, ok := n.hostDirs[name]
+	return dir, ok
+}
+
+var staticTypes = map[string]string{
+	".html": "text/html", ".css": "text/css", ".js": "text/javascript",
+	".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg",
+	".svg": "image/svg+xml", ".txt": "text/plain", ".ico": "image/x-icon",
+}
+
+func serveHosted(dir, urlPath string) (*tunnelResult, error) {
+	if strings.Contains(urlPath, "..") {
+		return nil, fmt.Errorf("path %q escapes the hosted directory", urlPath)
+	}
+	clean := path.Clean("/" + strings.TrimPrefix(urlPath, "/"))
+	if clean == "/" || clean == "." {
+		clean = "/index.html"
+	}
+	full := filepath.Join(dir, strings.TrimPrefix(clean, "/"))
+	rel, err := filepath.Rel(dir, full)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return nil, fmt.Errorf("path %q escapes the hosted directory", urlPath)
+	}
+	data, err := os.ReadFile(full)
+	if err != nil {
+		return &tunnelResult{Status: http.StatusNotFound, ContentType: "text/plain", Body: []byte("not found")}, nil
+	}
+	ct := staticTypes[strings.ToLower(filepath.Ext(full))]
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	return &tunnelResult{Status: http.StatusOK, ContentType: ct, Body: data}, nil
+}
+
 // callExposed proxies one HTTP request to a locally exposed service.
 func (n *Node) callExposed(ctx context.Context, call tunnelCall) (*tunnelResult, error) {
+	if dir, ok := n.hostDir(call.Service); ok {
+		return serveHosted(dir, call.Path)
+	}
 	addr, ok := n.exposed(call.Service)
 	if !ok {
 		return nil, fmt.Errorf("service %q is not exposed by %s", call.Service, n.Name)
@@ -709,6 +821,45 @@ func (n *Node) Handler() http.Handler {
 			out = append(out, p.Beacon)
 		}
 		writeJSON(w, out)
+	})
+	mux.HandleFunc("GET /api/routing", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, n.RoutingEntries())
+	})
+	mux.HandleFunc("GET /api/pair-code", func(w http.ResponseWriter, r *http.Request) {
+		code, err := n.PairCode()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]string{"code": code})
+	})
+	mux.HandleFunc("GET /api/pair-qr", func(w http.ResponseWriter, r *http.Request) {
+		code, err := n.PairCode()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		png, err := qrcode.Encode(code, qrcode.Medium, 256)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(png)
+	})
+	mux.HandleFunc("POST /api/pair", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Code string `json:"code"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.Code == "" {
+			http.Error(w, "code is required", http.StatusBadRequest)
+			return
+		}
+		if err := n.Pair(in.Code); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, n.Allowlist())
 	})
 	mux.HandleFunc("GET /api/allowlist", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, n.Allowlist())

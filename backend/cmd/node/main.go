@@ -32,6 +32,8 @@ func main() {
 	hubURL := flag.String("hub", "", "sync hub base URL, e.g. https://hub.example.com or http://192.168.1.10:8090 (syncs when reachable)")
 	allowList := flag.String("allow", "", "comma-separated device IDs allowed to send to this node (default: everyone)")
 	exposeList := flag.String("expose", "", "comma-separated name=host:port HTTP services to expose to peers, e.g. web=127.0.0.1:3000")
+	hostList := flag.String("host", "", "comma-separated name=directory static sites to host for peers, e.g. site=./hosted")
+	region := flag.String("region", "", "home region hint for routing, e.g. MY-Johor or ID-Batam")
 	flag.Parse()
 
 	id := *deviceID
@@ -54,6 +56,15 @@ func main() {
 			n.Expose(parts[0], parts[1])
 			log.Printf("exposing service %q at %s to peers", parts[0], parts[1])
 		}
+	}
+	for _, item := range strings.Split(*hostList, ",") {
+		if parts := strings.SplitN(strings.TrimSpace(item), "=", 2); len(parts) == 2 && parts[0] != "" {
+			n.HostDir(parts[0], parts[1])
+			log.Printf("hosting static site %q from %s", parts[0], parts[1])
+		}
+	}
+	if *region != "" {
+		n.SetRegion(*region)
 	}
 	log.Printf("%s pairing fingerprint: %s", *name, n.Fingerprint())
 

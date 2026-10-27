@@ -5,7 +5,7 @@
 - [x] Go node with LAN discovery (UDP broadcast beacons + manual `-peer`)
 - [x] Chat between nodes (HTTP delivery, payload in a `Bundle`; WebSocket events to UI)
 - [x] React UI: peer list + chat
-- [ ] mDNS discovery (broadcast covers LAN; mDNS planned for wider subnet support)
+- [x] mDNS discovery (`_offgrid-mesh._tcp`) alongside UDP broadcast
 
 ## Phase 2 — Bundles and mule mode
 
@@ -31,6 +31,9 @@
 
 ## Phase 4 — Hosting and polish
 
-- [ ] Host serves a static site / API gateway to peers
-- [ ] Encounter-based routing (PRoPHET-style scoring)
-- [ ] Demo video, screenshots, submission cleanup
+- [x] Host serves a static site (`-host site=./hosted`) / API gateway (`-expose`) to peers through the tunnel
+- [x] Encounter-based routing (PRoPHET-style scores, region boost, spray gate for carried bundles)
+- [x] QR pairing (pair code + QR image, paste-to-pair), file send progress
+- [x] Demo script and submission checklist in docs
+- [ ] BLE / Wi-Fi Direct transport, demo video recording, screenshots
+- [ ] Production hub deployment with domain + TLS
