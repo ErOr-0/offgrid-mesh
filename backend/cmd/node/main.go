@@ -19,7 +19,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ErOr-0/offgrid-mesh/backend/internal/node"
+	"github.com/ErOr-0/offgrid-mesh/backend/internal/app"
+	"github.com/ErOr-0/offgrid-mesh/backend/internal/transport/httpapi"
 )
 
 func main() {
@@ -42,7 +43,7 @@ func main() {
 	}
 
 	addr := fmt.Sprintf("%s:%d", localIP(), *port)
-	n, err := node.NewWithID(*name, addr, *discPort, *dataPath, id)
+	n, err := app.NewWithID(*name, addr, *discPort, *dataPath, id)
 	if err != nil {
 		log.Fatalf("load bundle store: %v", err)
 	}
@@ -103,7 +104,7 @@ func main() {
 	}
 
 	log.Printf("%s (%s) listening on port %d, advertising %s", *name, n.ID, *port, addr)
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *port), n.Handler()))
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *port), httpapi.New(n)))
 }
 
 // loadOrCreateID keeps a node's device ID stable across restarts.

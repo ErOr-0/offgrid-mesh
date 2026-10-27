@@ -27,10 +27,18 @@ Live mode (LAN / hotspot mesh) also supports a device tunnel, so one device can 
 
 ## Repository structure
 
+Modular monolith — one Go binary, one React build, explicit module boundaries (see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)):
+
 ```text
-backend/    Go node: bundle routing, discovery, tunnel
-frontend/   React UI (to be scaffolded)
-docs/       Architecture, roadmap, hackathon notes
+backend/cmd/node            composition root (flags, wiring)
+backend/internal/app        application core: messaging, sync, pairing, files, tunnel delegates
+backend/internal/modules    bundles, identity, discovery, routing, pairing, files, tunnel
+backend/internal/transport  httpapi (HTTP + WebSocket adapter, no domain logic)
+frontend/src/app            App composition + session state
+frontend/src/api            one client module per backend resource
+frontend/src/features       identity, peers, bundles, files, routing, pairing, chat components
+docs/                       Architecture, roadmap, demo and submission notes
+hosted/                     sample static site served through the tunnel
 ```
 
 ## Status
@@ -63,10 +71,14 @@ npm run dev
 
 Open http://localhost:5173 in your browser (proxies to the node on :8080). For the second node's UI, open http://localhost:5173/?node=http://localhost:8081
 
+Carry mode also accepts a **destination IP:port** (for example a node in Malaysia) instead of a device ID. The bundle travels addressed to that IP, and the first carrier that can reach it resolves the node's real device ID and delivers. There is no live IP route between countries without a continuous path — the bundle is carried, not routed.
+
 For mule mode, use **Carry (bundle)** in the UI, or queue from the API:
 
 ```powershell
 Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/bundles -ContentType 'application/json' -Body '{"to":"<device-id>","region":"MY-Johor","text":"hello Malaysia","copies":8,"ttl_hours":48}'
+# or addressed to an IP:port instead of a device ID:
+Invoke-RestMethod -Method Post -Uri http://localhost:8080/api/bundles -ContentType 'application/json' -Body '{"dest_ip":"203.0.113.7:8080","region":"MY-Johor","text":"hello Malaysia","copies":8,"ttl_hours":48}'
 ```
 
 Persist a node's queue and identity across restarts:
