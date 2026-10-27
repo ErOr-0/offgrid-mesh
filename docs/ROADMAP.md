@@ -2,9 +2,10 @@
 
 ## Phase 1 — LAN chat (MVP)
 
-- [ ] Go node with mDNS discovery
-- [ ] WebSocket chat between nodes
-- [ ] React UI: peer list + chat
+- [x] Go node with LAN discovery (UDP broadcast beacons + manual `-peer`)
+- [x] Chat between nodes (HTTP delivery, payload in a `Bundle`; WebSocket events to UI)
+- [x] React UI: peer list + chat
+- [ ] mDNS discovery (broadcast covers LAN; mDNS planned for wider subnet support)
 
 ## Phase 2 — Bundles and mule mode
 

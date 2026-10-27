@@ -35,7 +35,29 @@ docs/       Architecture, roadmap, hackathon notes
 
 ## Status
 
-Hackathon project — in active development. Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+Phase 1 (LAN chat) works. Start with [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/ROADMAP.md](docs/ROADMAP.md).
+
+## Run it (Phase 1 demo)
+
+Start two Go nodes (two terminals, or two devices on one LAN):
+
+```powershell
+cd backend
+go run ./cmd/node -name Alice -port 8080
+go run ./cmd/node -name Bob -port 8081 -peer <Alice-IP>:8080
+```
+
+Nodes on the same LAN find each other by UDP broadcast automatically. Use `-peer` when broadcast is blocked, or for two nodes on one machine.
+
+Start the React UI:
+
+```powershell
+cd frontend
+npm install
+npm run dev
+```
+
+Open http://localhost:5173 in your browser (proxies to the node on :8080). For the second node's UI, open http://localhost:5173/?node=http://localhost:8081
 
 ## Hackathon submission checklist
 
