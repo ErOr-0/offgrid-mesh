@@ -1,0 +1,14 @@
+[Unit]
+Description=OffGrid Mesh hub (sync super peer)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/offgrid-mesh
+ExecStart=/opt/offgrid-mesh/bin/node -name Hub -port 18090 -bind 127.0.0.1 -discovery-port 42090 -id hub-server -data /opt/offgrid-mesh/data/hub-bundles.json
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,14 @@
+[Unit]
+Description=OffGrid Mesh node hosted for the Indonesia iPad client
+After=network.target offgrid-hub.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/offgrid-mesh
+ExecStart=/opt/offgrid-mesh/bin/node -name Indonesia -port 18081 -bind 127.0.0.1 -discovery-port 42091 -id indonesia-ipad -region ID -hub http://127.0.0.1:18090 -data /opt/offgrid-mesh/data/indonesia-bundles.json
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

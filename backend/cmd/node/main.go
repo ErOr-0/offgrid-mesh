@@ -35,6 +35,7 @@ func main() {
 	exposeList := flag.String("expose", "", "comma-separated name=host:port HTTP services to expose to peers, e.g. web=127.0.0.1:3000")
 	hostList := flag.String("host", "", "comma-separated name=directory static sites to host for peers, e.g. site=./hosted")
 	region := flag.String("region", "", "home region hint for routing, e.g. MY-Johor or ID-Batam")
+	bind := flag.String("bind", "", "interface to listen on, e.g. 127.0.0.1 behind a reverse proxy (default: all interfaces)")
 	flag.Parse()
 
 	id := *deviceID
@@ -104,7 +105,7 @@ func main() {
 	}
 
 	log.Printf("%s (%s) listening on port %d, advertising %s", *name, n.ID, *port, addr)
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *port), httpapi.New(n)))
+	log.Fatal(http.ListenAndServe(fmt.Sprintf("%s:%d", *bind, *port), httpapi.New(n)))
 }
 
 // loadOrCreateID keeps a node's device ID stable across restarts.
