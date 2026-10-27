@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -43,6 +44,7 @@ type Node struct {
 	ID   string
 	Name string
 	Addr string // advertised host:port
+	Hub  string // base URL of the sync hub, if configured
 
 	disc  *discovery.Service
 	store *store.Store
@@ -117,7 +119,9 @@ func (n *Node) exchangeLoop(ctx context.Context) {
 			return
 		case <-t.C:
 			for _, p := range n.Peers() {
-				_ = n.ExchangeWith(ctx, p)
+				exCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+				_ = n.ExchangeWith(exCtx, p)
+				cancel()
 			}
 		}
 	}
@@ -134,9 +138,57 @@ func (n *Node) peerByID(id string) (discovery.Peer, bool) {
 	return discovery.Peer{}, false
 }
 
+// baseURL turns a peer address into a base URL. Peers may be plain
+// host:port (LAN) or a full http(s):// URL (a hub over the internet).
+func baseURL(addr string) string {
+	addr = strings.TrimSuffix(addr, "/")
+	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+		return addr
+	}
+	return "http://" + addr
+}
+
+// AddHub registers an always-on hub node and exchanges bundles with it now.
+// The hub is then a normal manual peer, so the exchange loop keeps syncing
+// whenever this node can reach it. All sync is outbound from this node:
+// the hub never needs to dial back, which keeps NAT and firewalls happy.
+func (n *Node) AddHub(ctx context.Context, hubURL string) error {
+	base := baseURL(hubURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/me", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("reach hub: %w", err)
+	}
+	defer resp.Body.Close()
+	var me struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&me); err != nil {
+		return err
+	}
+	n.Hub = base
+	peer := discovery.Peer{Beacon: discovery.Beacon{ID: me.ID, Name: me.Name, Addr: base}}
+	n.disc.Upsert(peer.Beacon)
+	// Announce ourselves so the hub knows this device exists.
+	announce, _ := json.Marshal(discovery.Beacon{ID: n.ID, Name: n.Name, Addr: n.Addr})
+	if req2, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/api/announce", bytes.NewReader(announce)); err == nil {
+		req2.Header.Set("Content-Type", "application/json")
+		if resp2, err := http.DefaultClient.Do(req2); err == nil {
+			resp2.Body.Close()
+		}
+	}
+	exCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	return n.ExchangeWith(exCtx, peer)
+}
+
 // AddManualPeer fetches a peer's identity from its HTTP API and registers it.
 func (n *Node) AddManualPeer(ctx context.Context, addr string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+"/api/me", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL(addr)+"/api/me", nil)
 	if err != nil {
 		return err
 	}
@@ -160,7 +212,7 @@ func (n *Node) AddManualPeer(ctx context.Context, addr string) error {
 	n.disc.Upsert(discovery.Beacon{ID: me.ID, Name: me.Name, Addr: advertised})
 	// Announce ourselves back so the peer knows us without broadcast.
 	announce, _ := json.Marshal(discovery.Beacon{ID: n.ID, Name: n.Name, Addr: n.Addr})
-	req2, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+addr+"/api/announce", bytes.NewReader(announce))
+	req2, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL(addr)+"/api/announce", bytes.NewReader(announce))
 	if err != nil {
 		return nil
 	}
@@ -187,7 +239,7 @@ func (n *Node) Send(ctx context.Context, toID, text string) (*Message, error) {
 		Message Message       `json:"message"`
 		Bundle  bundle.Bundle `json:"bundle"`
 	}{msg, b})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+peer.Addr+"/api/receive", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL(peer.Addr)+"/api/receive", bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -372,7 +424,7 @@ type exchangeRequest struct {
 // ExchangeWith swaps offerable bundles with one peer.
 func (n *Node) ExchangeWith(ctx context.Context, peer discovery.Peer) error {
 	reqBody, _ := json.Marshal(exchangeRequest{FromID: n.ID, FromName: n.Name, Bundles: n.prepareOffers(peer.ID)})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+peer.Addr+"/api/exchange", bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL(peer.Addr)+"/api/exchange", bytes.NewReader(reqBody))
 	if err != nil {
 		return err
 	}
@@ -399,7 +451,7 @@ func (n *Node) ExchangeWith(ctx context.Context, peer discovery.Peer) error {
 func (n *Node) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/me", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]string{"id": n.ID, "name": n.Name, "addr": n.Addr})
+		writeJSON(w, map[string]string{"id": n.ID, "name": n.Name, "addr": n.Addr, "hub": n.Hub})
 	})
 	mux.HandleFunc("GET /api/peers", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, n.Peers())

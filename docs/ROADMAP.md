@@ -15,6 +15,12 @@
 - [x] Stable device IDs (`-id`, or persisted next to the `-data` file)
 - [ ] BLE / Wi-Fi Direct transport (same exchange protocol, new transport)
 
+## Server sync (Option 3: hub as super peer)
+
+- [x] `-hub <url>` on any node: outbound bundle sync with an always-on hub node
+- [x] Hub accepts `https://` base URLs, carries bundles between regions, never dials back (NAT-safe)
+- [ ] Hub behind TLS with a public domain (deployment task, same binary)
+
 ## Phase 3 — Files, identity, tunnel
 
 - [ ] Encrypted file transfer with progress

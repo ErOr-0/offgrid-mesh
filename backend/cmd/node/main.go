@@ -29,6 +29,7 @@ func main() {
 	peerList := flag.String("peer", "", "comma-separated peer addresses (host:port) if broadcast is blocked")
 	dataPath := flag.String("data", "", "file to persist carried bundles, e.g. alice-bundles.json")
 	deviceID := flag.String("id", "", "stable device ID (default: generated, persisted next to -data file)")
+	hubURL := flag.String("hub", "", "sync hub base URL, e.g. https://hub.example.com or http://192.168.1.10:8090 (syncs when reachable)")
 	flag.Parse()
 
 	id := *deviceID
@@ -44,6 +45,19 @@ func main() {
 
 	ctx := context.Background()
 	n.Run(ctx)
+
+	if *hubURL != "" {
+		go func() {
+			// Keep retrying: the hub syncs whenever connectivity appears.
+			for {
+				if err := n.AddHub(ctx, *hubURL); err == nil {
+					log.Printf("synced with hub %s", *hubURL)
+					return
+				}
+				time.Sleep(10 * time.Second)
+			}
+		}()
+	}
 
 	if *peerList != "" {
 		go func() {

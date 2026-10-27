@@ -35,6 +35,7 @@ export interface Me {
   id: string
   name: string
   addr: string
+  hub?: string
 }
 
 export type NodeEvent =

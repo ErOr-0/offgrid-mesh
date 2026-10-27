@@ -73,6 +73,29 @@ Persist a node's queue and identity across restarts:
 go run ./cmd/node -name Alice -port 8080 -data alice-bundles.json
 ```
 
+## Hosting on your own server (hub / super peer)
+
+The hub is the same binary. It does not replace local nodes — it bridges them when they have internet.
+
+On your server (public IP, and a domain + TLS in production):
+
+```powershell
+go run ./cmd/node -name Hub -port 8090 -data hub-bundles.json
+```
+
+On each device, add the hub once. Sync is outbound-only, so NAT and firewalls do not block it:
+
+```powershell
+go run ./cmd/node -name Alice -port 8080 -data alice-bundles.json -hub https://hub.example.com
+```
+
+Behaviour:
+
+- No internet: LAN chat, discovery, and carried bundles keep working locally. Nothing is lost.
+- Internet appears on any device: it pushes bundles it carries and pulls bundles waiting for it (every 5s while reachable, with retries at startup).
+- The hub stores bundles until the destination syncs, then issues and forwards delivery receipts the same way.
+- Anyone can read bundle metadata on the hub today; payloads are not yet end-to-end encrypted. That is Phase 3, and it is required before trusting a public hub.
+
 ## Hackathon submission checklist
 
 - [ ] Problem, solution, and demo clearly described in this README

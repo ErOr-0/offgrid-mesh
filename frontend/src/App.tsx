@@ -111,6 +111,7 @@ function App() {
           <strong>{me ? me.name : '...'}</strong>
           <span className="mono">{me ? me.addr : status}</span>
           <span className="mono dim">{me?.id}</span>
+          <span className="mono dim">{me?.hub ? `Hub sync: ${me.hub}` : 'Hub sync: not configured'}</span>
         </div>
 
         <h2 className="section-title">Nearby peers ({peers.length})</h2>
